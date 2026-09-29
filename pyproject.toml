@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "smart-cache"
+version = "0.1.0"
+description = "Async hybrid cache with stale-while-revalidate background refresh and stampede protection"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+authors = [
+    { name = "authoritydmc", email = "dev@example.com" },
+]
+keywords = ["cache", "asyncio", "swr", "stale-while-revalidate", "lru", "stampede-protection"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/smart_cache"]
