@@ -77,7 +77,7 @@ class SmartCache:
                     return entry.value
 
             # Compute
-            if inspect.iscoroutinefunction(compute_fn) or asyncio.iscoroutinefunction(compute_fn):
+            if inspect.iscoroutinefunction(compute_fn):
                 value = await compute_fn()
             else:
                 res = compute_fn()
@@ -99,7 +99,7 @@ class SmartCache:
 
         async with lock:
             try:
-                if inspect.iscoroutinefunction(compute_fn) or asyncio.iscoroutinefunction(compute_fn):
+                if inspect.iscoroutinefunction(compute_fn):
                     value = await compute_fn()
                 else:
                     res = compute_fn()
