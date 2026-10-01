@@ -10,6 +10,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple, TypeVar
 
+from smart_cache.locks import BaseLock, BaseLockProvider, InProcessLockProvider
+
 F = TypeVar("F", bound=Callable[..., Any])
 
 
@@ -30,19 +32,23 @@ class CacheEntry:
 
 
 class SmartCache:
-    """In-memory LRU Cache with TTL, SWR background updates, and Mutex Locks."""
+    """In-memory LRU Cache with TTL, SWR background updates, and Mutex Stampede Locks."""
 
-    def __init__(self, max_size: int = 1000, ttl: float = 60.0, stale_ttl: float = 60.0):
+    def __init__(
+        self,
+        max_size: int = 1000,
+        ttl: float = 60.0,
+        stale_ttl: float = 60.0,
+        lock_provider: Optional[BaseLockProvider] = None,
+    ):
         self.max_size = max_size
         self.default_ttl = ttl
         self.default_stale_ttl = stale_ttl
         self._store: OrderedDict[str, CacheEntry] = OrderedDict()
-        self._locks: Dict[str, asyncio.Lock] = {}
+        self.lock_provider = lock_provider or InProcessLockProvider()
 
-    def _get_lock(self, key: str) -> asyncio.Lock:
-        if key not in self._locks:
-            self._locks[key] = asyncio.Lock()
-        return self._locks[key]
+    def _get_lock(self, key: str) -> BaseLock:
+        return self.lock_provider.get_lock(key)
 
     async def get_or_compute(
         self,
@@ -70,7 +76,7 @@ class SmartCache:
         # 2. Need synchronous computation with stampede lock
         lock = self._get_lock(key)
         async with lock:
-            # Double check after acquiring lock
+            # Double check after acquiring lock (another coroutine might have just populated it)
             if key in self._store:
                 entry = self._store[key]
                 if entry.is_fresh:
@@ -94,19 +100,24 @@ class SmartCache:
         stale_ttl: float,
     ) -> None:
         lock = self._get_lock(key)
-        if lock.locked():
+        if lock.is_locked():
             return  # Already revalidating
 
-        async with lock:
-            try:
-                if inspect.iscoroutinefunction(compute_fn):
-                    value = await compute_fn()
-                else:
-                    res = compute_fn()
-                    value = await res if inspect.isawaitable(res) else res
-                self.set(key, value, ttl=ttl, stale_ttl=stale_ttl)
-            except Exception:
-                pass  # Keep stale value on background error
+        acquired = await lock.acquire(blocking=False)
+        if not acquired:
+            return
+
+        try:
+            if inspect.iscoroutinefunction(compute_fn):
+                value = await compute_fn()
+            else:
+                res = compute_fn()
+                value = await res if inspect.isawaitable(res) else res
+            self.set(key, value, ttl=ttl, stale_ttl=stale_ttl)
+        except Exception:
+            pass  # Keep stale value on background error
+        finally:
+            await lock.release()
 
     def set(self, key: str, value: Any, ttl: Optional[float] = None, stale_ttl: Optional[float] = None) -> None:
         _ttl = ttl if ttl is not None else self.default_ttl
@@ -126,7 +137,7 @@ class SmartCache:
 
     def clear(self) -> None:
         self._store.clear()
-        self._locks.clear()
+
 
 
 def cached(cache: SmartCache, ttl: Optional[float] = None, stale_ttl: Optional[float] = None) -> Callable[[F], F]:
